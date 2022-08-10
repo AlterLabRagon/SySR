@@ -1,0 +1,31 @@
+Package: systemsseRology
+Title: systemsseRology
+Version: 1.1
+Authors@R: 
+    person(given = "Carolin",
+           family = "Loos",
+           role = c("aut", "cre"),
+           email = "carolin.loos@gmx.de")
+Description: Machine learning tools for the analysis of systems serology data
+License: BSD-3-Clause License 
+Encoding: UTF-8
+LazyData: true
+Imports: 
+    ggplot2,
+    ropls,
+    readxl,
+    glmnet,
+    ggrepel,
+    RColorBrewer,
+    caret,
+    matrixStats,
+    corrr,
+    ggraph,
+    igraph,
+    tidyverse,
+    dplyr
+Suggests:
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
+RoxygenNote: 7.1.1

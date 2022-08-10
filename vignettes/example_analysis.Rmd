@@ -1,0 +1,273 @@
+---
+title: "example_analysis"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{example_analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+rm(list = ls())
+```
+
+Load the package
+
+```{r setup}
+library(systemsseRology)
+set.seed(0)  # random seed for reproducibility
+```
+
+# Classification
+
+Read the data from an Excel file. Z-score the data and assign the label in the variable y.
+
+```{r data}
+library(readxl)
+data <- as.data.frame(read_excel("../data/RSTR_data_NatureMedicine_subset.xlsx"))
+
+X <- as.matrix(as.data.frame(lapply(data[, 5:ncol(data)], as.numeric)))
+# z-score the data to make features comparable
+X <- scale(X, center = TRUE, scale = TRUE)
+y <- factor(data$y, levels = unique(data$y))
+```
+
+The variable df_features contains information about the features, mainly used for visualization routines. 
+Here, we assign a label (removing underscores) and extract the antigen. 
+
+```{r annotation}
+df_features <- data.frame(name = colnames(X))
+df_features$label <- gsub("_", " ", df_features$name)
+df_features$antigen <- gsub("_.*", "", df_features$name)
+df_features$antigen <- factor(df_features$antigen)
+df_features$feature_class <- rep(NA, length = nrow(df_features))
+df_features$feature_class[which(grepl("IgG|IgA|IgM", df_features$name))] <- "titer"
+df_features$feature_class[which(grepl("FcR", df_features$name))] <- "FcR"
+df_features$feature_class <- factor(df_features$feature_class)
+```
+
+Example PCA and PLS-DA (using the package ropls) and visualization.
+
+```{r PLSDA vis}
+library(RColorBrewer)
+
+# Define colors
+my_colors = list(group = c(RSTR = "red", LTB = "blue"))
+my_colors$antigen <- colorRampPalette(brewer.pal(name = "Dark2", n = 8))(nlevels(df_features$antigen))
+names(my_colors$antigen) <- unique(df_features$antigen)
+my_colors$feature_class <- colorRampPalette(brewer.pal(name = "Set1", n = 3))(nlevels(df_features$feature_class))
+names(my_colors$feature_class) <- unique(df_features$feature_class)
+
+# general options for plotting
+opts_plot <- list(df_features = df_features,
+                  loading_alpha = 1, # transparency for the loadings
+                  score_alpha = 1, # transparency for the scores
+                  LV_ind = c(1,2), # which LVs to plot
+                  color_features = "antigen", # according to which property (defined in df_features) the features should be color-coded
+                  colors = my_colors,
+                  y_name = "group") 
+
+# Perform a simple PCA using the interface function pca_ropls
+model_pca <- pca_ropls(X)
+plt_scores_pca <- visualize_ropls_scores(model_pca, y, options = opts_plot)
+print(plt_scores_pca)
+
+# Perform a PLS-DA and plot the scores and loadings
+model <- train_ropls(X, y)
+
+plt_scores <- visualize_ropls_scores(model, y, options = opts_plot)
+print(plt_scores)
+
+plt_loadings <- visualize_ropls_loadings(model, options = opts_plot)
+print(plt_loadings)
+
+# set additional options required to color code enrichment in the bar plot of the loadings
+opts_plot$X <- X
+opts_plot$y <- y
+opts_plot$LV_ind <- 1
+opts_plot$mark_enrichment <- TRUE
+plt_loadings_bar <- visualize_ropls_loadings_bar(model, options = opts_plot)
+print(plt_loadings_bar)
+
+# print the results of 5-fold cv for the ropls method without any
+# feature selection. if validate() is passed a method with no feature
+# selector it will default to selecting all features and set rf_trials = 0
+method = list(train = train_ropls,
+              predict = predict_ropls,
+              score = score_accuracy)
+
+opts = list(n_folds = 5, pt_trials = 0)
+
+return_vals <- validate(X, y, method, opts)
+
+print(paste("Performance in 5-fold cv:", round(return_vals$cv_score, digits = 2), "accuracy"))
+```
+
+Feature selection and then PLS-DA.
+
+```{r feature selection}
+opts_sel <- list(n_trials = 10, threshold = 0.8, return_count = FALSE)
+sel_features <- select_lasso(X, y)
+print(sel_features)
+# repeat this selection 10 times and pick the features that are chosen in 
+# more than 80% of the repetitions
+sel_features <- select_repeat(X, y, 
+                              selector = select_lasso, 
+                              options = opts_sel)
+X_sel <- X[, sel_features]
+
+# Perform a PLS-DA using the selected features and plot the scores and loadings
+model <- train_ropls(X_sel, y)
+# The model only has one latent variable. For visualization purposes we fix it to be two dimensional.
+ropls::getSummaryDF(model)
+
+opts_model <- list(n_LV = 2)
+model <- train_ropls(X_sel, y, options = opts_model)
+
+opts_plot$LV_ind <- c(1,2)
+plt_scores <- visualize_ropls_scores(model, y, options = opts_plot)
+print(plt_scores)
+
+plt_loadings <- visualize_ropls_loadings(model, options = opts_plot)
+print(plt_loadings)
+
+# set additional options required to color code enrichment in the bar plot of the loadings
+opts_plot$X <- X_sel
+opts_plot$y <- y
+opts_plot$LV_ind <- 1
+opts_plot$mark_enrichment <- TRUE
+plt_loadings_bar <- visualize_ropls_loadings_bar(model, options = opts_plot)
+print(plt_loadings_bar)
+
+```
+
+
+Analyze model results. First we check the accuracy obtained on the whole data set. 
+
+```{r cross-validate pls}
+y_pred <- predict_ropls(model, X_sel)
+acc <- score_accuracy(y, y_pred)
+
+print(paste("Performance on full data set:", round(acc, digits = 2), "accuracy"))
+
+select <- function(X, y) { return(select_repeat(X, y, selector = select_lasso, options = opts_sel)) }
+
+method = list(select = select, 
+              train = train_ropls,
+              predict = predict_ropls,
+              score = score_accuracy)
+
+opts = list(n_folds = 5, rf_trials = 0, pt_trials = 0)
+
+return_vals <- validate(X, y, method, opts)
+
+print(paste("Performance in 5-fold cv:", round(return_vals$cv_score, digits = 2), "accuracy"))
+```
+
+Permutation testing to assess model significance using two different approaches.
+1) Size-matched random features
+2) Permuted labels
+
+```{r model validation}
+opts$rf_trials <- 3
+opts$pt_trials <- 3
+opts$compare_pred <- "y_perm" #whether for the 'permuted labels' the predicted label is compared to the original ("y"), or the permuted vector of labels ("y_perm")
+return_vals <- validate(X, y, method, opts)
+repeated_vals <- validate_repeat(X, y, method, opts, n_trials = 3)
+```
+
+
+
+# Regression
+
+An example for a regression, i.e., y being continuous.
+
+```{r data regression}
+rm(list = ls())
+
+library(readxl)
+data <- as.data.frame(read_excel("../data/RSTR_data_NatureMedicine_subset.xlsx"))
+
+X <- as.matrix(as.data.frame(lapply(data[, 5:(ncol(data) - 1)], as.numeric)))
+X <- scale(X, center = TRUE, scale = TRUE)
+y <- data[,ncol(data)]
+```
+
+The variable df_features contains information about the features, mainly used for visualization routines. 
+Here, we assign a label (removing underscores) and extract the antigen. 
+
+```{r annotation regression}
+df_features <- data.frame(name = colnames(X))
+df_features$label <- gsub("_", " ", df_features$name)
+df_features$antigen <- gsub("_.*", "", df_features$name)
+df_features$antigen <- factor(df_features$antigen)
+df_features$feature_class <- rep(NA, length = nrow(df_features))
+df_features$feature_class[which(grepl("IgG|IgA|IgM", df_features$name))] <- "titer"
+df_features$feature_class[which(grepl("FcR", df_features$name))] <- "FcR"
+df_features$feature_class <- factor(df_features$feature_class)
+```
+
+Example PCA and PLS-R (using the package ropls) and visualization.
+
+```{r PLSR vis}
+library(RColorBrewer)
+
+# Define colors
+my_colors = list(y = c(low = "red", high = "blue"))
+my_colors$antigen <- colorRampPalette(brewer.pal(name = "Dark2", n = 8))(nlevels(df_features$antigen))
+names(my_colors$antigen) <- unique(df_features$antigen)
+my_colors$feature_class <- colorRampPalette(brewer.pal(name = "Set1", n = 3))(nlevels(df_features$feature_class))
+names(my_colors$feature_class) <- unique(df_features$feature_class)
+
+# general options for plotting
+opts_plot <- list(df_features = df_features,
+                  loading_alpha = 1, # transparency for the loadings
+                  score_alpha = 1, # transparency for the scores
+                  LV_ind = c(1,2), # which LVs to plot
+                  color_features = "antigen", 
+                  colors = my_colors,
+                  y_name = "y") 
+
+# Perform a simple PCA using the interface function pca_ropls
+model_pca <- pca_ropls(X)
+plt_scores_pca <- visualize_ropls_scores(model_pca, y, options = opts_plot)
+print(plt_scores_pca)
+
+# Perform a PLS-DA and plot the scores and loadings
+model <- train_ropls(X, y)
+
+plt_scores <- visualize_ropls_scores(model, y, options = opts_plot)
+print(plt_scores)
+
+plt_loadings <- visualize_ropls_loadings(model, options = opts_plot)
+print(plt_loadings)
+
+# set additional options required to color code enrichment in the bar plot of the loadings
+opts_plot$LV_ind <- 1
+plt_loadings_bar <- visualize_ropls_loadings_bar(model, options = opts_plot)
+print(plt_loadings_bar)
+```
+
+
+```{r cross-validate PLSR}
+y_pred <- predict_ropls(model, X)
+r2 <- score_r2(y, y_pred)
+
+print(paste("Performance on full data set:", r2, "R^2"))
+
+method = list(select = select_lasso,
+              train = train_ropls,
+              predict = predict_ropls,
+              score = score_r2)
+
+opts = list(n_folds = 5, rf_trials = 0, pt_trials = 0)
+
+return_vals <- validate(X, y, method, opts)
+
+print(paste("Performance in 5-fold cv:", return_vals$cv_score, "R^2"))
+```
